@@ -620,9 +620,29 @@ def process_match(url: str, driver: webdriver.Chrome, away_team_focus: bool = Fa
         # Nie kwalifikuje się podstawowo - nie sprawdzaj formy
         out['qualifies'] = False
     
-    # Kursy bukmacherskie - dodatkowa informacja (NIE wpływa na scoring!)
+    # ===================================================================
+    # WYKRYWANIE SPORTU - potrzebne przed pobieraniem kursów
+    # ===================================================================
+    # Wykryj sport z URL (MUSI być przed extract_betting_odds_with_api!)
+    sport = 'football'
+    if 'koszykowka' in url.lower() or 'basketball' in url.lower():
+        sport = 'basketball'
+    elif 'siatkowka' in url.lower() or 'volleyball' in url.lower():
+        sport = 'volleyball'
+    elif 'pilka-reczna' in url.lower() or 'handball' in url.lower():
+        sport = 'handball'
+    elif 'hokej' in url.lower() or 'hockey' in url.lower():
+        sport = 'hockey'
+    elif 'tenis' in url.lower() or 'tennis' in url.lower():
+        sport = 'tennis'
+    
+    # ===================================================================
+    # KURSY BUKMACHERSKIE 1X2 (lub 1/2 dla sportów bez remisu)
+    # ===================================================================
     # UŻYWAMY PRAWDZIWEGO API LIVESPORT (odkrytego przez Selenium-Wire)
-    odds = extract_betting_odds_with_api(url)
+    # WAŻNE: Dla sportów bez remisu (siatkówka, koszykówka, etc.) używamy
+    # innego typu zakładu (HOME_AWAY zamiast HOME_DRAW_AWAY)
+    odds = extract_betting_odds_with_api(url, sport=sport)
     out['home_odds'] = odds.get('home_odds')
     out['away_odds'] = odds.get('away_odds')
     
@@ -644,19 +664,6 @@ def process_match(url: str, driver: webdriver.Chrome, away_team_focus: bool = Fa
     out['btts_h2h_percentage'] = 0.0
     out['btts_yes_odds'] = None
     out['btts_no_odds'] = None
-    
-    # Wykryj sport z URL
-    sport = 'football'
-    if 'koszykowka' in url.lower() or 'basketball' in url.lower():
-        sport = 'basketball'
-    elif 'siatkowka' in url.lower() or 'volleyball' in url.lower():
-        sport = 'volleyball'
-    elif 'pilka-reczna' in url.lower() or 'handball' in url.lower():
-        sport = 'handball'
-    elif 'hokej' in url.lower() or 'hockey' in url.lower():
-        sport = 'hockey'
-    elif 'tenis' in url.lower() or 'tennis' in url.lower():
-        sport = 'tennis'
     
     # KROK 1: Pobierz kursy O/U z API (dynamiczna linia)
     api_line = None
@@ -1110,14 +1117,18 @@ def extract_team_form(soup: BeautifulSoup, driver: webdriver.Chrome, side: str, 
     return form[:5]
 
 
-def extract_betting_odds_with_api(url: str) -> Dict[str, Optional[float]]:
+def extract_betting_odds_with_api(url: str, sport: str = 'football') -> Dict[str, Optional[float]]:
     """
     Ekstraktuj kursy bukmacherskie używając LiveSport GraphQL API (Nordic Bet).
     
     NOWA METODA - używa oficjalnego API zamiast scrapowania HTML!
     
+    WAŻNE: Dla sportów bez remisu (siatkówka, koszykówka, tenis, hokej, piłka ręczna)
+    używa innego typu zakładu (HOME_AWAY zamiast HOME_DRAW_AWAY).
+    
     Args:
         url: URL meczu z Livesport
+        sport: Sport (np. 'football', 'volleyball', 'basketball') - wpływa na wybór betType
     
     Returns:
         {'home_odds': 1.85, 'away_odds': 2.10, 'draw_odds': 3.50} lub {'home_odds': None, 'away_odds': None}
@@ -1128,12 +1139,13 @@ def extract_betting_odds_with_api(url: str) -> Dict[str, Optional[float]]:
         # Inicjalizuj klienta API (Nordic Bet = 165)
         client = LiveSportOddsAPI(bookmaker_id="165", geo_ip_code="PL")
         
-        # Pobierz kursy przez API
-        odds = client.get_odds_from_url(url)
+        # Pobierz kursy przez API - przekaż sport aby użyć odpowiedniego betType
+        odds = client.get_odds_from_url(url, sport=sport)
         
         if odds:
             if VERBOSE:
-                print(f"   💰 API: Pobrano kursy z {odds['bookmaker_name']}")
+                bet_type_info = f" (betType: {odds.get('bet_type_used', 'unknown')})" if odds.get('bet_type_used') else ""
+                print(f"   💰 API: Pobrano kursy z {odds['bookmaker_name']}{bet_type_info}")
                 print(f"      Home: {odds['home_odds']}, Away: {odds['away_odds']}")
             
             return {
@@ -1143,7 +1155,7 @@ def extract_betting_odds_with_api(url: str) -> Dict[str, Optional[float]]:
             }
         else:
             if VERBOSE:
-                print(f"   ⚠️ API: Brak kursów dla tego meczu")
+                print(f"   ⚠️ API: Brak kursów dla tego meczu (sport: {sport})")
             return {'home_odds': None, 'away_odds': None}
     
     except ImportError:
@@ -1157,7 +1169,7 @@ def extract_betting_odds_with_api(url: str) -> Dict[str, Optional[float]]:
         return {'home_odds': None, 'away_odds': None}
 
 
-def extract_betting_odds_with_selenium(driver: webdriver.Chrome, soup: BeautifulSoup, url: str = None) -> Dict[str, Optional[float]]:
+def extract_betting_odds_with_selenium(driver: webdriver.Chrome, soup: BeautifulSoup, url: str = None, sport: str = 'football') -> Dict[str, Optional[float]]:
     """
     Ekstraktuj kursy bukmacherskie dla meczu.
     
@@ -1168,6 +1180,7 @@ def extract_betting_odds_with_selenium(driver: webdriver.Chrome, soup: Beautiful
         driver: Selenium WebDriver
         soup: BeautifulSoup parsed HTML
         url: URL meczu (potrzebny dla API)
+        sport: Sport (np. 'football', 'volleyball') - wpływa na wybór betType dla API
     
     Returns:
         {'home_odds': 1.85, 'away_odds': 2.10} lub {'home_odds': None, 'away_odds': None}
@@ -1177,7 +1190,7 @@ def extract_betting_odds_with_selenium(driver: webdriver.Chrome, soup: Beautiful
         if VERBOSE:
             print(f"   💰 Próbuję pobrać kursy przez GraphQL API...")
         
-        api_odds = extract_betting_odds_with_api(url)
+        api_odds = extract_betting_odds_with_api(url, sport=sport)
         
         if api_odds and api_odds.get('home_odds') and api_odds.get('away_odds'):
             return api_odds
@@ -1968,7 +1981,8 @@ def process_match_tennis(url: str, driver: webdriver.Chrome) -> Dict:
     
     # 4. KURSY BUKMACHERSKIE - dodatkowa informacja (NIE wpływa na scoring!)
     # UŻYWAMY PRAWDZIWEGO API LIVESPORT (odkrytego przez Selenium-Wire)
-    odds = extract_betting_odds_with_api(url)
+    # WAŻNE: Tenis nie ma remisów - używamy HOME_AWAY zamiast HOME_DRAW_AWAY
+    odds = extract_betting_odds_with_api(url, sport='tennis')
     out['home_odds'] = odds.get('home_odds')
     out['away_odds'] = odds.get('away_odds')
     

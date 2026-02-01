@@ -9,8 +9,18 @@ Domyślnie używa Nordic Bet (ID: 165), ale można zmienić na innego bukmachera
 
 import requests
 import re
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import time
+
+# Sporty bez remisu - wymagają innego typu zakładu (HOME_AWAY zamiast HOME_DRAW_AWAY)
+SPORTS_WITHOUT_DRAW = frozenset(['volleyball', 'basketball', 'handball', 'hockey', 'tennis'])
+
+# Typy zakładów do próby dla sportów bez remisu (w kolejności priorytetów)
+BET_TYPES_FOR_NO_DRAW_SPORTS = ['HOME_AWAY', 'MATCH_WINNER', 'HOME_DRAW_AWAY']
+
+# Domyślny typ zakładu dla sportów z remisem (piłka nożna)
+DEFAULT_BET_TYPE = 'HOME_DRAW_AWAY'
+
 
 class LiveSportOddsAPI:
     """Klient do pobierania kursów bukmacherskich z LiveSport GraphQL API"""
@@ -85,7 +95,7 @@ class LiveSportOddsAPI:
         return None
     
     
-    def get_odds_for_event(self, event_id: str) -> Optional[Dict]:
+    def get_odds_for_event(self, event_id: str, sport: str = None) -> Optional[Dict]:
         """
         Pobiera kursy bukmacherskie dla konkretnego wydarzenia
         
@@ -93,18 +103,45 @@ class LiveSportOddsAPI:
         
         Args:
             event_id: ID wydarzenia z Livesport (np. "KQAaF7d2")
+            sport: Sport (np. 'football', 'volleyball', 'basketball') - używany do wyboru betType
         
         Returns:
             Słownik z kursami lub None
         """
         
+        # Wybierz typy zakładów do próby w zależności od sportu
+        # Dla sportów bez remisu (siatkówka, koszykówka, etc.) próbuj HOME_AWAY najpierw
+        if sport and sport in SPORTS_WITHOUT_DRAW:
+            bet_types_to_try = BET_TYPES_FOR_NO_DRAW_SPORTS
+        else:
+            bet_types_to_try = [DEFAULT_BET_TYPE]
+        
+        # Próbuj każdy typ zakładu po kolei, aż znajdziemy kursy
+        for bet_type in bet_types_to_try:
+            result = self._fetch_odds_with_bet_type(event_id, bet_type)
+            if result:
+                return result
+        
+        return None
+    
+    def _fetch_odds_with_bet_type(self, event_id: str, bet_type: str) -> Optional[Dict]:
+        """
+        Wewnętrzna metoda do pobierania kursów z konkretnym typem zakładu
+        
+        Args:
+            event_id: ID wydarzenia z Livesport
+            bet_type: Typ zakładu (np. 'HOME_DRAW_AWAY', 'HOME_AWAY', 'MATCH_WINNER')
+        
+        Returns:
+            Słownik z kursami lub None
+        """
         try:
             # PRAWDZIWE parametry (DOKŁADNIE JAK W LIVESPORTSCRAPER - linie 149-155)
             params = {
                 '_hash': 'ope2',  # Hash dla kursów ("odds per bookmaker")
                 'eventId': event_id,
                 'bookmakerId': self.bookmaker_id,  # 165 = Nordic Bet
-                'betType': 'HOME_DRAW_AWAY',  # Typ zakładu: 1X2
+                'betType': bet_type,  # Typ zakładu: zależny od sportu
                 'betScope': 'FULL_TIME'  # Pełen czas (nie połowy)
             }
             
@@ -115,9 +152,9 @@ class LiveSportOddsAPI:
                 timeout=10
             )
             
-            # Sprawdź status
+            # Sprawdź status - nie wyświetlaj błędów dla każdego betType (może być normalne)
             if response.status_code != 200:
-                print(f"   ⚠️ API ERROR {response.status_code}: {response.text[:200]}")
+                return None
             
             response.raise_for_status()
             data = response.json()
@@ -126,18 +163,26 @@ class LiveSportOddsAPI:
             if 'data' in data and 'findPrematchOddsForBookmaker' in data['data']:
                 odds_data = data['data']['findPrematchOddsForBookmaker']
                 
+                # Sprawdź czy odds_data nie jest None/puste
+                if not odds_data:
+                    return None
+                
                 result = {
                     'bookmaker_id': self.bookmaker_id,
                     'bookmaker_name': self.bookmaker_names.get(self.bookmaker_id, 'Nordic Bet'),
                     'source': 'livesport_api',
-                    'event_id': event_id
+                    'event_id': event_id,
+                    'bet_type_used': bet_type  # Dodatkowa informacja o użytym typie
                 }
                 
-                # HOME odds
-                if 'home' in odds_data and odds_data['home']:
-                    home_value = odds_data['home'].get('value')
-                    if home_value:
-                        result['home_odds'] = float(home_value)
+                # HOME odds - próbuj różne klucze (home, team1, 1)
+                home_value = None
+                for key in ['home', 'team1', '1']:
+                    if key in odds_data and odds_data[key]:
+                        home_value = odds_data[key].get('value')
+                        if home_value:
+                            result['home_odds'] = float(home_value)
+                            break
                 
                 # DRAW odds (może nie istnieć dla niektórych sportów)
                 if 'draw' in odds_data and odds_data['draw']:
@@ -145,11 +190,14 @@ class LiveSportOddsAPI:
                     if draw_value:
                         result['draw_odds'] = float(draw_value)
                 
-                # AWAY odds
-                if 'away' in odds_data and odds_data['away']:
-                    away_value = odds_data['away'].get('value')
-                    if away_value:
-                        result['away_odds'] = float(away_value)
+                # AWAY odds - próbuj różne klucze (away, team2, 2)
+                away_value = None
+                for key in ['away', 'team2', '2']:
+                    if key in odds_data and odds_data[key]:
+                        away_value = odds_data[key].get('value')
+                        if away_value:
+                            result['away_odds'] = float(away_value)
+                            break
                 
                 # Sprawdź czy mamy przynajmniej home i away
                 if result.get('home_odds') and result.get('away_odds'):
@@ -158,20 +206,20 @@ class LiveSportOddsAPI:
             return None
         
         except requests.exceptions.RequestException as e:
-            print(f"   ⚠️ Błąd API request: {e}")
+            # Cichy błąd - nie spamuj logów przy próbach różnych betType
             return None
         
         except (KeyError, ValueError, TypeError) as e:
-            print(f"   ⚠️ Błąd parsowania odpowiedzi API: {e}")
             return None
     
     
-    def get_odds_from_url(self, match_url: str) -> Optional[Dict]:
+    def get_odds_from_url(self, match_url: str, sport: str = None) -> Optional[Dict]:
         """
         Pobiera kursy bukmacherskie bezpośrednio z URL meczu
         
         Args:
             match_url: Pełny URL meczu z Livesport
+            sport: Sport (opcjonalnie) - jeśli nie podany, próbuje wykryć z URL
         
         Returns:
             Słownik z kursami (jak get_odds_for_event) lub None
@@ -189,8 +237,48 @@ class LiveSportOddsAPI:
             print(f"   ⚠️ Nie znaleziono Event ID w URL: {match_url}")
             return None
         
+        # Jeśli sport nie podany, spróbuj wykryć z URL
+        if not sport:
+            sport = self._detect_sport_from_url(match_url)
+        
         # Pobierz kursy dla tego event
-        return self.get_odds_for_event(event_id)
+        return self.get_odds_for_event(event_id, sport=sport)
+    
+    def _detect_sport_from_url(self, url: str) -> str:
+        """
+        Wykrywa sport z URL Livesport
+        
+        Args:
+            url: URL meczu
+        
+        Returns:
+            Nazwa sportu (np. 'football', 'volleyball') lub 'football' jako domyślny
+        """
+        url_lower = url.lower()
+        
+        # Mapowanie fragmentów URL na sporty
+        sport_patterns = {
+            'siatkowka': 'volleyball',
+            'volleyball': 'volleyball',
+            'koszykowka': 'basketball',
+            'basketball': 'basketball',
+            'pilka-reczna': 'handball',
+            'handball': 'handball',
+            'hokej': 'hockey',
+            'hockey': 'hockey',
+            'tenis': 'tennis',
+            'tennis': 'tennis',
+            'pilka-nozna': 'football',
+            'football': 'football',
+            'soccer': 'football',
+        }
+        
+        for pattern, sport in sport_patterns.items():
+            if pattern in url_lower:
+                return sport
+        
+        # Domyślnie football
+        return 'football'
     
     
     def get_over_under_odds(self, event_id: str, sport: str = 'football') -> Optional[Dict]:
@@ -347,11 +435,15 @@ class LiveSportOddsAPI:
         """
         Pobiera WSZYSTKIE kursy dla wydarzenia (1X2 + O/U + BTTS)
         
+        Args:
+            event_id: ID wydarzenia z Livesport
+            sport: Sport (np. 'football', 'volleyball') - wpływa na wybór betType
+        
         Returns:
             {
-                # 1X2
+                # 1X2 (lub 1/2 dla sportów bez remisu)
                 'home_odds': 1.85,
-                'draw_odds': 3.50,
+                'draw_odds': 3.50,  # None dla sportów bez remisu
                 'away_odds': 4.20,
                 
                 # Over/Under
@@ -366,8 +458,8 @@ class LiveSportOddsAPI:
         """
         result = {}
         
-        # 1. Pobierz kursy 1X2
-        main_odds = self.get_odds_for_event(event_id)
+        # 1. Pobierz kursy 1X2 (lub 1/2 dla sportów bez remisu)
+        main_odds = self.get_odds_for_event(event_id, sport=sport)
         if main_odds:
             result.update(main_odds)
         
