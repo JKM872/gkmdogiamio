@@ -1509,6 +1509,50 @@ def extract_betting_odds(soup: BeautifulSoup) -> Dict[str, Optional[float]]:
         return {'home_odds': None, 'away_odds': None}
 
 
+def _tennis_names_match(name1: str, name2: str) -> bool:
+    """
+    Porównuje nazwy tenisistów z tolerancją na różne formaty.
+    
+    Obsługuje:
+    - 'Djokovic N.' vs 'Novak Djokovic'
+    - 'Djokovic' vs 'N. Djokovic'
+    - 'Świątek I.' vs 'Iga Świątek'
+    - Skróty z kropką, odwrócona kolejność, etc.
+    """
+    if not name1 or not name2:
+        return False
+    
+    n1 = name1.lower().strip()
+    n2 = name2.lower().strip()
+    
+    # Exact match
+    if n1 == n2:
+        return True
+    
+    # Substring match (krótszy w dłuższym)
+    if n1 in n2 or n2 in n1:
+        return True
+    
+    # Porównaj nazwiska (ostatni token bez kropek/inicjałów)
+    def extract_surname(name: str) -> str:
+        """Wyciąga nazwisko — najdłuższy token bez kropki."""
+        tokens = name.replace('.', '').replace(',', '').split()
+        # Filtruj inicjały (1-2 znaki)
+        surnames = [t for t in tokens if len(t) > 2]
+        return surnames[-1] if surnames else (tokens[-1] if tokens else '')
+    
+    surname1 = extract_surname(n1)
+    surname2 = extract_surname(n2)
+    
+    if surname1 and surname2 and len(surname1) > 2 and len(surname2) > 2:
+        if surname1 == surname2:
+            return True
+        if surname1 in surname2 or surname2 in surname1:
+            return True
+    
+    return False
+
+
 def extract_player_ranking(soup: BeautifulSoup, player_name: str) -> Optional[int]:
     """
     Wydobądź ranking zawodnika ze strony.
@@ -1932,31 +1976,20 @@ def process_match_tennis(url: str, driver: webdriver.Chrome) -> Dict:
     h2h = parse_h2h_from_soup(soup, out['home_team'] or '', debug_url=h2h_url)
     out['h2h_last5'] = h2h
 
-    # NOWE: Wyciągnij dane ostatniego meczu H2H (najnowszy = h2h[0])
-    if h2h and len(h2h) > 0:
-        last_match = h2h[0]
-        out['last_h2h_match_date'] = last_match.get('date')
-        out['last_h2h_match_score'] = last_match.get('score')
-        if last_match.get('winner') == 'draw':
-            out['last_h2h_match_result'] = 'D'
-        else:
-            out['last_h2h_match_result'] = 'W' if last_match.get('winner') == 'home' else ('L' if last_match.get('winner') == 'away' else 'U')
-
     # LOGIKA KWALIFIKACJI DLA TENISA
-    player_a = out['home_team']  # Zawodnik A (pierwszy)
-    player_b = out['away_team']  # Zawodnik B (drugi)
+    player_a = out['home_team']  # Zawodnik A (pierwszy na stronie)
+    player_b = out['away_team']  # Zawodnik B (drugi na stronie)
     
     player_a_wins = 0
     player_b_wins = 0
     
     for item in h2h:
         try:
-            h2h_player1 = item.get('home', '').strip()
-            h2h_player2 = item.get('away', '').strip()
+            h2h_player1 = item.get('home', '').strip()  # Pierwszy w wierszu H2H
+            h2h_player2 = item.get('away', '').strip()  # Drugi w wierszu H2H
             score = item.get('score', '')
             
-            # Parsuj wynik (w tenisie może być np. "6-4, 7-5" lub "2-1" dla setów)
-            import re
+            # Parsuj wynik (w tenisie: "2-1" sety lub "6-4" gem — bierzemy pierwszy wynik)
             score_match = re.search(r"(\d+)\s*[:\-]\s*(\d+)", score)
             if not score_match:
                 continue
@@ -1964,28 +1997,26 @@ def process_match_tennis(url: str, driver: webdriver.Chrome) -> Dict:
             sets1 = int(score_match.group(1))
             sets2 = int(score_match.group(2))
             
-            # Kto wygrał ten mecz?
+            # Kto wygrał ten mecz H2H?
             if sets1 > sets2:
-                winner = h2h_player1
+                match_winner_name = h2h_player1
             elif sets2 > sets1:
-                winner = h2h_player2
+                match_winner_name = h2h_player2
             else:
                 continue  # remis (nie powinno być w tenisie)
             
-            # Normalizacja nazw
-            winner_normalized = winner.lower().strip()
-            player_a_normalized = player_a.lower().strip() if player_a else ''
-            player_b_normalized = player_b.lower().strip() if player_b else ''
-            
-            # Sprawdź kto wygrał (A czy B)
-            if player_a and (winner_normalized == player_a_normalized or 
-                            winner_normalized in player_a_normalized or 
-                            player_a_normalized in winner_normalized):
+            # Robust name matching — użyj _tennis_names_match()
+            if player_a and _tennis_names_match(match_winner_name, player_a):
                 player_a_wins += 1
-            elif player_b and (winner_normalized == player_b_normalized or 
-                              winner_normalized in player_b_normalized or 
-                              player_b_normalized in winner_normalized):
+            elif player_b and _tennis_names_match(match_winner_name, player_b):
                 player_b_wins += 1
+            else:
+                # Fallback: sprawdź kto PRZEGRAŁ zamiast kto wygrał
+                match_loser_name = h2h_player2 if match_winner_name == h2h_player1 else h2h_player1
+                if player_b and _tennis_names_match(match_loser_name, player_b):
+                    player_a_wins += 1  # Skoro B przegrał, A wygrał
+                elif player_a and _tennis_names_match(match_loser_name, player_a):
+                    player_b_wins += 1  # Skoro A przegrał, B wygrał
                     
         except Exception as e:
             continue
@@ -1993,6 +2024,36 @@ def process_match_tennis(url: str, driver: webdriver.Chrome) -> Dict:
     out['home_wins_in_h2h_last5'] = player_a_wins  # Zawodnik A
     out['away_wins_in_h2h'] = player_b_wins        # Zawodnik B
     out['h2h_count'] = len(h2h)
+    
+    # NOWE: Poprawiony last_h2h_match_result dla tenisa (player A/B, nie home/away)
+    if h2h and len(h2h) > 0:
+        last_match = h2h[0]
+        out['last_h2h_match_date'] = last_match.get('date')
+        out['last_h2h_match_score'] = last_match.get('score')
+        # Określ kto wygrał ostatni mecz dla player_a
+        lm_home = last_match.get('home', '').strip()
+        lm_away = last_match.get('away', '').strip()
+        lm_score = last_match.get('score', '')
+        lm_score_match = re.search(r"(\d+)\s*[:\-]\s*(\d+)", lm_score)
+        if lm_score_match:
+            s1, s2 = int(lm_score_match.group(1)), int(lm_score_match.group(2))
+            if s1 > s2:
+                lm_winner = lm_home
+            elif s2 > s1:
+                lm_winner = lm_away
+            else:
+                lm_winner = None
+            if lm_winner:
+                if _tennis_names_match(lm_winner, player_a):
+                    out['last_h2h_match_result'] = 'W'  # Player A wygrał
+                elif _tennis_names_match(lm_winner, player_b):
+                    out['last_h2h_match_result'] = 'L'  # Player A przegrał
+                else:
+                    out['last_h2h_match_result'] = 'U'
+            else:
+                out['last_h2h_match_result'] = 'D'
+        else:
+            out['last_h2h_match_result'] = 'U'
     
     # ===================================================================
     # ADVANCED ANALYSIS: Scraping dodatkowych danych
@@ -2079,17 +2140,30 @@ def process_match_tennis(url: str, driver: webdriver.Chrome) -> Dict:
         analyzer = TennisMatchAnalyzerV3()
         
         # V3 Przygotuj dane H2H jako listę meczów (nowy format)
+        # POPRAWKA: Robust name matching zamiast exact == porównania
         h2h_matches = []
         for h2h_match in h2h:
-            # Konwertuj do formatu wymaganego przez V3
             winner = None
             score_str = h2h_match.get('score', '')
+            h2h_home = h2h_match.get('home', '').strip()
+            h2h_away = h2h_match.get('away', '').strip()
             
-            # Określ zwycięzcę
+            # Określ zwycięzcę z robust name matching
             if h2h_match.get('winner') == 'home':
-                winner = 'player_a' if h2h_match.get('home') == player_a else 'player_b'
+                # Kto jest "home" w tym wierszu H2H?
+                if _tennis_names_match(h2h_home, player_a):
+                    winner = 'player_a'
+                elif _tennis_names_match(h2h_home, player_b):
+                    winner = 'player_b'
+                else:
+                    winner = 'player_a'  # fallback
             elif h2h_match.get('winner') == 'away':
-                winner = 'player_b' if h2h_match.get('away') == player_b else 'player_a'
+                if _tennis_names_match(h2h_away, player_a):
+                    winner = 'player_a'
+                elif _tennis_names_match(h2h_away, player_b):
+                    winner = 'player_b'
+                else:
+                    winner = 'player_b'  # fallback
             
             h2h_matches.append({
                 'date': h2h_match.get('date', ''),
