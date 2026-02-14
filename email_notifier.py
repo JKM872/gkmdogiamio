@@ -259,6 +259,24 @@ def create_html_email(matches: List[Dict], date: str, sort_by: str = 'time') -> 
                     </div>
                 '''
         
+        # NOWE: Informacja o ostatnim meczu H2H
+        last_h2h_info = ''
+        last_h2h_date = match.get('last_h2h_match_date')
+        last_h2h_score = match.get('last_h2h_match_score')
+        last_h2h_result = match.get('last_h2h_match_result')
+        
+        if last_h2h_date and last_h2h_score:
+            result_emoji_map = {'W': '✅', 'L': '❌', 'D': '🟡', 'U': '❓'}
+            result_emoji = result_emoji_map.get(str(last_h2h_result), '❓')
+            result_text_map = {'W': 'Wygrana', 'L': 'Przegrana', 'D': 'Remis', 'U': 'Nieznany'}
+            result_text = result_text_map.get(str(last_h2h_result), '')
+            
+            last_h2h_info = f'''
+                <div style="margin-top: 8px; padding: 8px; background-color: #FFF8DC; border-left: 4px solid #FF8C00; border-radius: 3px; font-size: 13px;">
+                    <strong>🕰️ Ostatni mecz H2H:</strong> {last_h2h_date} | Wynik: <strong>{last_h2h_score}</strong> {result_emoji} <em>({result_text})</em>
+                </div>
+            '''
+
         # Kursy bukmacherskie (jeśli dostępne)
         odds_html = ''
         home_odds = match.get('home_odds')
@@ -298,6 +316,7 @@ def create_html_email(matches: List[Dict], date: str, sort_by: str = 'time') -> 
                 </div>
                 <div class="stats">
                     {h2h_info}
+                    {last_h2h_info}
                     {form_info}
                 </div>
                 {odds_html}

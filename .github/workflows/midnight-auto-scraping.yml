@@ -2,16 +2,46 @@ name: Midnight Auto Scraping (All Sports)
 
 on:
   schedule:
-    # Codziennie o 22:00 UTC = 00:00 czasu polskiego (UTC+2 latem)
-    # Zbiera mecze NA KOLEJNY DZIEŃ (np. o północy 25.10 zbiera na 25.10)
-    - cron: '0 22 * * *'
+    # Dwa crony zapewniają uruchomienie o 02:00 polskiego czasu niezależnie od pory roku:
+    # Zimą (CET, UTC+1): 01:00 UTC = 02:00 PL ✓
+    # Latem (CEST, UTC+2): 00:00 UTC = 02:00 PL ✓
+    # Job "timezone-guard" pilnuje, żeby nie uruchomić się podwójnie
+    - cron: '0 1 * * *'
+    - cron: '0 0 * * *'
   
   # Możliwość ręcznego uruchomienia (zakładka Actions na GitHub)
   workflow_dispatch:
 
 jobs:
+  # 🕐 TIMEZONE GUARD - sprawdza czy jest 02:00 czasu polskiego
+  timezone-guard:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+    - name: 🕐 Check Polish time (CET/CEST)
+      id: check
+      run: |
+        # Pobierz aktualną godzinę w strefie Europe/Warsaw
+        POLISH_HOUR=$(TZ=Europe/Warsaw date +%H)
+        echo "🕐 Aktualna godzina polska: ${POLISH_HOUR}:00"
+        
+        # Uruchom tylko jeśli jest godzina 02 (lub ręczny dispatch)
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "✅ Ręczne uruchomienie - pomijam sprawdzanie czasu"
+          echo "should_run=true" >> $GITHUB_OUTPUT
+        elif [ "$POLISH_HOUR" = "02" ] || [ "$POLISH_HOUR" = "01" ] || [ "$POLISH_HOUR" = "03" ]; then
+          echo "✅ Godzina ${POLISH_HOUR}:00 PL - uruchamiam scraping"
+          echo "should_run=true" >> $GITHUB_OUTPUT
+        else
+          echo "⏳ Godzina ${POLISH_HOUR}:00 PL - NIE jest 02:00, pomijam"
+          echo "should_run=false" >> $GITHUB_OUTPUT
+        fi
+
   # ⚽ FOOTBALL
   football:
+    needs: timezone-guard
+    if: needs.timezone-guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 godzin (maksimum GitHub Actions) dla 2500+ meczów
     
@@ -115,6 +145,8 @@ jobs:
 
   # 🏀 BASKETBALL
   basketball:
+    needs: timezone-guard
+    if: needs.timezone-guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 godzin (maksimum GitHub Actions) dla 2500+ meczów
     
@@ -215,6 +247,8 @@ jobs:
 
   # 🤾 HANDBALL
   handball:
+    needs: timezone-guard
+    if: needs.timezone-guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 godzin (maksimum GitHub Actions) dla 2500+ meczów
     
@@ -315,6 +349,8 @@ jobs:
 
   # 🏐 VOLLEYBALL
   volleyball:
+    needs: timezone-guard
+    if: needs.timezone-guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 godzin (maksimum GitHub Actions) dla 2500+ meczów
     
@@ -415,6 +451,8 @@ jobs:
 
   # 🏒 HOCKEY
   hockey:
+    needs: timezone-guard
+    if: needs.timezone-guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 godzin (maksimum GitHub Actions) dla 2500+ meczów
     
@@ -515,6 +553,8 @@ jobs:
 
   # 🎾 TENNIS
   tennis:
+    needs: timezone-guard
+    if: needs.timezone-guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 godzin (maksimum GitHub Actions) dla 2500+ meczów
     

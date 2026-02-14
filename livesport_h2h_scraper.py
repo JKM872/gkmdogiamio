@@ -344,6 +344,10 @@ def process_match(url: str, driver: webdriver.Chrome, away_team_focus: bool = Fa
         'home_odds': None,  # Kursy bukmacherskie (info dodatkowa)
         'away_odds': None,
         'focus_team': 'away' if away_team_focus else 'home',  # NOWE: który tryb
+        # NOWE POLA: Ostatni mecz H2H
+        'last_h2h_match_date': None,
+        'last_h2h_match_score': None,
+        'last_h2h_match_result': None,  # 'W', 'D', 'L' dla focus_team
     }
 
     # KLUCZOWE: Przekieruj URL na stronę H2H (zamiast szczegoly)
@@ -473,6 +477,19 @@ def process_match(url: str, driver: webdriver.Chrome, away_team_focus: bool = Fa
     # parse H2H
     h2h = parse_h2h_from_soup(soup, out['home_team'] or '', debug_url=h2h_url)
     out['h2h_last5'] = h2h
+
+    # NOWE: Wyciągnij dane ostatniego meczu H2H (najnowszy = h2h[0])
+    if h2h and len(h2h) > 0:
+        last_match = h2h[0]
+        out['last_h2h_match_date'] = last_match.get('date')
+        out['last_h2h_match_score'] = last_match.get('score')
+        # Określ wynik dla focus_team (home lub away)
+        if last_match.get('winner') == 'draw':
+            out['last_h2h_match_result'] = 'D'
+        elif away_team_focus:
+            out['last_h2h_match_result'] = 'W' if last_match.get('winner') == 'away' else ('L' if last_match.get('winner') == 'home' else 'U')
+        else:
+            out['last_h2h_match_result'] = 'W' if last_match.get('winner') == 'home' else ('L' if last_match.get('winner') == 'away' else 'U')
 
     # count home AND away wins in H2H list
     # WAŻNE: W zależności od trybu (away_team_focus), liczymy zwycięstwa gospodarzy lub gości
@@ -1821,6 +1838,10 @@ def process_match_tennis(url: str, driver: webdriver.Chrome) -> Dict:
         'qualifies': False,
         'home_odds': None,             # Kurs bukmacherski na zawodnika A
         'away_odds': None,             # Kurs bukmacherski na zawodnika B
+        # NOWE POLA: Ostatni mecz H2H
+        'last_h2h_match_date': None,
+        'last_h2h_match_score': None,
+        'last_h2h_match_result': None,  # 'W', 'D', 'L' dla faworyta
     }
 
     # TENIS używa innego URLa H2H niż inne sporty!
@@ -1910,6 +1931,16 @@ def process_match_tennis(url: str, driver: webdriver.Chrome) -> Dict:
     # Parse H2H
     h2h = parse_h2h_from_soup(soup, out['home_team'] or '', debug_url=h2h_url)
     out['h2h_last5'] = h2h
+
+    # NOWE: Wyciągnij dane ostatniego meczu H2H (najnowszy = h2h[0])
+    if h2h and len(h2h) > 0:
+        last_match = h2h[0]
+        out['last_h2h_match_date'] = last_match.get('date')
+        out['last_h2h_match_score'] = last_match.get('score')
+        if last_match.get('winner') == 'draw':
+            out['last_h2h_match_result'] = 'D'
+        else:
+            out['last_h2h_match_result'] = 'W' if last_match.get('winner') == 'home' else ('L' if last_match.get('winner') == 'away' else 'U')
 
     # LOGIKA KWALIFIKACJI DLA TENISA
     player_a = out['home_team']  # Zawodnik A (pierwszy)
